@@ -204,21 +204,25 @@ function loadConfig(){try{var s=localStorage.getItem(STORAGE_KEY);if(s){var p=JS
 function saveConfig(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(config));}catch(e){}}
 var iosUnlocked=false;
 var speakWatchdog=null;
-function iosUnlock(){
-  // iOS requires a speechSynthesis call directly inside a user gesture to unlock audio
-  if(iosUnlocked||!window.speechSynthesis)return;
+function iosUnlock(callback){
+  if(!window.speechSynthesis){if(callback)callback();return;}
+  if(iosUnlocked){if(callback)callback();return;}
+  iosUnlocked=true;
   var u=new SpeechSynthesisUtterance('');
   u.volume=0;
+  u.onend=function(){if(callback)setTimeout(callback,50);};
+  u.onerror=function(){if(callback)setTimeout(callback,50);};
   window.speechSynthesis.speak(u);
-  iosUnlocked=true;
 }
 function speak(emoji){
   if(!window.speechSynthesis){showToast('Sprachausgabe nicht verf\u00fcgbar');return;}
-  iosUnlock();
-  // On iOS, cancel() can break the synth; pause/resume is safer
+  if(!iosUnlocked){
+    // First tap: unlock first, then speak after unlock utterance ends
+    iosUnlock(function(){doSpeak(emoji);});
+    return;
+  }
   if(window.speechSynthesis.speaking||window.speechSynthesis.pending){
     window.speechSynthesis.cancel();
-    // Small delay needed on iOS after cancel
     setTimeout(function(){doSpeak(emoji);},120);
   } else {
     doSpeak(emoji);
@@ -268,7 +272,7 @@ function renderGrid(){
     var btn=document.createElement('button');btn.className='sb';
     var lbl=getName(emoji);if(lbl.length>14)lbl=lbl.substring(0,14);
     btn.innerHTML='<span class="se">'+emoji+'</span><span class="sl">'+lbl+'</span>';
-    function doPlay(e){if(e&&e.cancelable&&e.type==='touchstart')e.preventDefault();iosUnlock();btn.classList.add('playing');setTimeout(function(){btn.classList.remove('playing');},400);speak(emoji);}
+    function doPlay(e){if(e&&e.cancelable&&e.type==='touchstart')e.preventDefault();btn.classList.add('playing');setTimeout(function(){btn.classList.remove('playing');},400);speak(emoji);}
     btn.addEventListener('click',doPlay);btn.addEventListener('touchstart',doPlay,{passive:false});
     grid.appendChild(btn);
   });
