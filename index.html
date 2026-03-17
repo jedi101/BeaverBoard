@@ -202,18 +202,64 @@ var config={
 };
 function loadConfig(){try{var s=localStorage.getItem(STORAGE_KEY);if(s){var p=JSON.parse(s);if(p.emojis)config.emojis=p.emojis;if(p.voiceName)config.voiceName=p.voiceName;if(p.rate)config.rate=p.rate;if(p.pitch)config.pitch=p.pitch;if(p.volume!==undefined)config.volume=p.volume;}}catch(e){}}
 function saveConfig(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(config));}catch(e){}}
+var iosUnlocked=false;
+var speakWatchdog=null;
+function iosUnlock(){
+  // iOS requires a speechSynthesis call directly inside a user gesture to unlock audio
+  if(iosUnlocked||!window.speechSynthesis)return;
+  var u=new SpeechSynthesisUtterance('');
+  u.volume=0;
+  window.speechSynthesis.speak(u);
+  iosUnlocked=true;
+}
 function speak(emoji){
   if(!window.speechSynthesis){showToast('Sprachausgabe nicht verf\u00fcgbar');return;}
-  window.speechSynthesis.cancel();
+  iosUnlock();
+  // On iOS, cancel() can break the synth; pause/resume is safer
+  if(window.speechSynthesis.speaking||window.speechSynthesis.pending){
+    window.speechSynthesis.cancel();
+    // Small delay needed on iOS after cancel
+    setTimeout(function(){doSpeak(emoji);},120);
+  } else {
+    doSpeak(emoji);
+  }
+}
+function doSpeak(emoji){
+  var synth=window.speechSynthesis;
   var name=getName(emoji);
   var utt=new SpeechSynthesisUtterance(name);
   utt.lang='de-DE';
-  if(config.voiceName&&voices.length){for(var i=0;i<voices.length;i++){if(voices[i].name===config.voiceName){utt.voice=voices[i];break;}}}
-  utt.rate=config.rate;utt.pitch=config.pitch;utt.volume=config.volume;
+  // Find voice
+  if(config.voiceName&&voices.length){
+    for(var i=0;i<voices.length;i++){if(voices[i].name===config.voiceName){utt.voice=voices[i];break;}}
+  }
+  utt.rate=parseFloat(config.rate)||1;
+  utt.pitch=parseFloat(config.pitch)||1;
+  utt.volume=parseFloat(config.volume);
+  if(isNaN(utt.volume))utt.volume=1;
   var vi=document.getElementById('vi'),vlbl=document.getElementById('vlbl');
-  utt.onstart=function(){vi.classList.add('speaking');vlbl.textContent=name;};
-  utt.onend=utt.onerror=function(){vi.classList.remove('speaking');vlbl.textContent='Bereit';};
-  window.speechSynthesis.speak(utt);
+  utt.onstart=function(){
+    vi.classList.add('speaking');vlbl.textContent=name;
+    // iOS watchdog: speechSynthesis can freeze mid-utterance; resume it every 5s
+    clearInterval(speakWatchdog);
+    speakWatchdog=setInterval(function(){
+      if(synth.speaking){synth.pause();synth.resume();}
+      else{clearInterval(speakWatchdog);}
+    },5000);
+  };
+  utt.onend=function(){
+    clearInterval(speakWatchdog);
+    vi.classList.remove('speaking');vlbl.textContent='Bereit';
+  };
+  utt.onerror=function(e){
+    clearInterval(speakWatchdog);
+    vi.classList.remove('speaking');vlbl.textContent='Bereit';
+    // 'interrupted' is normal on iOS when a new speak fires; don't show error
+    if(e.error&&e.error!=='interrupted'&&e.error!=='canceled'){
+      showToast('Fehler: '+e.error);
+    }
+  };
+  synth.speak(utt);
 }
 function renderGrid(){
   var grid=document.getElementById('grid');grid.innerHTML='';
@@ -222,7 +268,7 @@ function renderGrid(){
     var btn=document.createElement('button');btn.className='sb';
     var lbl=getName(emoji);if(lbl.length>14)lbl=lbl.substring(0,14);
     btn.innerHTML='<span class="se">'+emoji+'</span><span class="sl">'+lbl+'</span>';
-    function doPlay(e){if(e&&e.cancelable&&e.type==='touchstart')e.preventDefault();btn.classList.add('playing');setTimeout(function(){btn.classList.remove('playing');},400);speak(emoji);}
+    function doPlay(e){if(e&&e.cancelable&&e.type==='touchstart')e.preventDefault();iosUnlock();btn.classList.add('playing');setTimeout(function(){btn.classList.remove('playing');},400);speak(emoji);}
     btn.addEventListener('click',doPlay);btn.addEventListener('touchstart',doPlay,{passive:false});
     grid.appendChild(btn);
   });
@@ -319,7 +365,18 @@ document.getElementById('resetBtn').addEventListener('click',function(){if(confi
 document.getElementById('rrate').addEventListener('input',function(){config.rate=parseFloat(this.value);document.getElementById('rratev').textContent=config.rate.toFixed(1);});
 document.getElementById('rpitch').addEventListener('input',function(){config.pitch=parseFloat(this.value);document.getElementById('rpitchv').textContent=config.pitch.toFixed(1);});
 document.getElementById('rvol').addEventListener('input',function(){config.volume=parseFloat(this.value);document.getElementById('rvolv').textContent=config.volume.toFixed(2);});
-function initVoices(){if(!window.speechSynthesis)return;voices=window.speechSynthesis.getVoices();window.speechSynthesis.onvoiceschanged=function(){voices=window.speechSynthesis.getVoices();};}
+function initVoices(){
+  if(!window.speechSynthesis)return;
+  function load(){var v=window.speechSynthesis.getVoices();if(v&&v.length)voices=v;}
+  load();
+  window.speechSynthesis.onvoiceschanged=function(){load();};
+  // iOS fallback: poll up to 3s since onvoiceschanged often doesn't fire
+  var tries=0;
+  var poll=setInterval(function(){
+    load();
+    if(voices.length||++tries>15)clearInterval(poll);
+  },200);
+}
 loadConfig();renderGrid();initVoices();
 </script>
 </body>
